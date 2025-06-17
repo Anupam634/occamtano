@@ -1,9 +1,11 @@
 [package]
 version = "0.1.0"
-name = "fibonacci-program"
+name = "btc-holdings-program"
 edition = "2021"
 
 [dependencies]
 alloy-sol-types = { workspace = true }
 sp1-zkvm = "4.2.0"
+sha2 = "0.10"
+bitcoin = { version = "0.30", features = ["secp-recovery"] }
 fibonacci-lib = { path = "../lib" }

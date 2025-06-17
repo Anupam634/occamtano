@@ -1,10 +1,7 @@
 [workspace]
 members = [
     "lib",
-    "Icr",
-    "Liquid",
-    "Real_time_ltv",
-    "program",
+    "btc-holdings",
     "script",
 ]
 resolver = "2"
