@@ -10,11 +10,11 @@ use anyhow::Result;
 use hex;
 
 pub const BTC_HOLDINGS_ELF: &[u8] = include_elf!("btc-holdings-program");
+pub const FIXED_BTC_ADDRESS: &str = "bc1q8q5ngue8697flt8yc52xrfppecf47jghhlvq8v96ukeaqz694y7q2tzca9";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BtcHoldingsRequest {
-    btc_address: String,
     org_id: String,
     proof_system: String,
 }
@@ -41,7 +41,7 @@ struct BlockstreamUtxo {
 async fn prove_btc_holdings(req: web::Json<BtcHoldingsRequest>) -> impl Responder {
     println!("Received BTC holdings proof request: {:?}", req);
 
-    let utxos = match fetch_utxos(&req.btc_address).await {
+    let utxos = match fetch_utxos(FIXED_BTC_ADDRESS).await {
         Ok(utxos) => utxos,
         Err(e) => {
             eprintln!("Failed to fetch UTXOs: {:?}", e);
