@@ -27,6 +27,7 @@ pub struct DogeHoldingsResponse {
     public_values: String,
     proof: String,
     verifier_version: String,
+    latest_locked_doge: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +114,14 @@ async fn prove_doge_holdings(req: web::Json<DogeHoldingsRequest>) -> impl Respon
         return HttpResponse::BadRequest().body("No UTXOs found for the address");
     }
 
+    let latest_locked_doge = match fetch_latest_dodge_locked(&req.doge_address).await {
+        Ok(amount) => Some(amount),
+        Err(e) => {
+            eprintln!("Failed to fetch latest locked DOGE: {:?}", e);
+            None
+        }
+    };
+
     let expected_total = utxos.iter().map(|u| u.value).sum::<u64>();
     let org_id = req.org_id.clone();
     let proof_system = req.proof_system.clone();
@@ -182,9 +191,37 @@ async fn prove_doge_holdings(req: web::Json<DogeHoldingsRequest>) -> impl Respon
         public_values: format!("0x{}", hex::encode(public_bytes)),
         proof: format!("0x{}", hex::encode(proof.bytes())),
         verifier_version: "0x1234abcd".to_string(),
+        latest_locked_doge,
     };
 
     HttpResponse::Ok().json(response)
+}
+
+
+
+
+async fn fetch_latest_dodge_locked(address: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "https://api.tatum.io/v3/dogecoin/transaction/address/{}?pageSize=1&offset=0",
+        address
+    );
+    let resp = client
+        .get(&url)
+        .header("x-api-key", "t-67ae0be674c77aa851dd5cce-bd0e33fb85f646a1931d9d0a")
+        .send()
+        .await?;
+
+    let body = resp.text().await?;
+    let txs: Vec<TatumTransaction> = serde_json::from_str(&body)?;
+
+    if let Some(tx) = txs.first() {
+        if tx.locktime > 0 {
+            return Ok(tx.locktime);
+        }
+    }
+
+    Ok(0)
 }
 
 async fn fetch_doge_utxos(address: &str) -> Result<Vec<DogeUtxo>, Box<dyn std::error::Error>> {
