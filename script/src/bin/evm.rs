@@ -118,7 +118,7 @@ async fn prove_doge_holdings(req: web::Json<DogeHoldingsRequest>) -> impl Respon
     let proof_system = req.proof_system.clone();
 
     let proof_result = task::spawn_blocking(move || {
-let client = ProverClient::from_env();
+let client = ProverClient::local();
         let (pk, vk) = client.setup(DOGE_HOLDINGS_ELF);
         let mut stdin = sp1_sdk::SP1Stdin::new();
 
