@@ -22,7 +22,7 @@ path = "src/bin/vkey.rs"
 
 [dependencies]
 # SP1 SDK
-sp1-sdk = "4.2.0"
+sp1-sdk = "5.0.8"
 bincode = "1.3"
 
 # Serialization
@@ -56,7 +56,7 @@ fibonacci-lib = { path = "../lib" }
 alloy-sol-types = { workspace = true }
 
 [build-dependencies]
-sp1-build = "4.2.0"
+sp1-build = "5.0.8"
 
 [profile.dev]
 opt-level = 0
