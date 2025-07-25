@@ -238,11 +238,11 @@ async fn fetch_doge_utxos(address: &str) -> Result<Vec<DogeUtxo>, Box<dyn std::e
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     setup_logger();
-    println!("Starting Dogecoin Holdings SP1 proof server on http://localhost:3001");
+    println!("Starting Dogecoin Holdings SP1 proof server on http://localhost:3005");
 
     HttpServer::new(|| App::new().service(prove_doge_holdings))
         .workers(4)
-        .bind(("0.0.0.0", 3001))?
+        .bind(("0.0.0.0", 3005))?
         .run()
         .await
 }
