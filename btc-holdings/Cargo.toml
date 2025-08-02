@@ -9,3 +9,6 @@ sp1-zkvm = "5.0.8"
 sha2 = "0.10"
 bitcoin = { version = "0.30", features = ["secp-recovery"] }
 fibonacci-lib = { path = "../lib" }
+alloy-primitives = { workspace = true }
+
+

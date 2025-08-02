@@ -1,32 +1,37 @@
+use sp1_sdk::Prover;
+use std::io::Read;
 use actix_web::{post, web, App, HttpResponse, HttpServer, Responder};
 use alloy_sol_types::SolType;
+use alloy_primitives::Address;
 use reqwest;
 use serde::{Deserialize, Serialize, Deserializer};
-use sp1_sdk::{include_elf, ProverClient, HashableKey, utils::setup_logger};
-use fibonacci_lib::{PublicValuesBtcHoldings, Utxo, BtcHoldingsInput};
+use sp1_sdk::{include_elf, ProverClient, SP1Stdin, setup_logger, HashableKey};
+use fibonacci_lib::PublicValuesBtcHoldings;
 use tokio::task;
 use anyhow::Result;
 use hex;
+use sha3::{Digest, Keccak256};
 
-pub const DOGE_HOLDINGS_ELF: &[u8] = include_elf!("btc-holdings-program");
+// Program binary
+pub const DOGE_DEPOSIT_ELF: &[u8] = include_elf!("btc-holdings-program");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DogeHoldingsRequest {
-    doge_address: String,
-    org_id: String,
+pub struct DogeDepositRequest {
+    tx_hash: String,
+    wallet_address: String,
     proof_system: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DogeHoldingsResponse {
-    total_doge: u64,
-    org_hash: String,
+pub struct DogeDepositResponse {
+    sender_address: String,
+    deposit_amount: u64,
+    wallet_address: String,
     vkey: String,
     public_values: String,
     proof: String,
-    verifier_version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +51,8 @@ struct TatumTransaction {
 #[serde(rename_all = "camelCase")]
 struct TatumInput {
     prevout: TatumPrevout,
+    #[serde(default)]
+    script_sig: TatumScriptSig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,21 +63,19 @@ struct TatumPrevout {
     index: u32,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TatumScriptSig {
+    #[serde(default)]
+    asm: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TatumOutput {
     address: String,
     #[serde(deserialize_with = "deserialize_value")]
     value: String,
-    #[serde(default)]
-    n: Option<u32>,
-}
-
-#[derive(Debug, Clone)]
-struct DogeUtxo {
-    txid: String,
-    vout: u32,
-    value: u64,
 }
 
 fn deserialize_value<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -97,74 +102,127 @@ where
     }
 }
 
-#[post("/prove-doge-holdings")]
-async fn prove_doge_holdings(req: web::Json<DogeHoldingsRequest>) -> impl Responder {
-    println!("Received Dogecoin holdings proof request: {:?}", req);
+// Convert Dogecoin public key to address (simplified, using Keccak256 for Ethereum-style address)
+fn pubkey_to_address(pubkey: &[u8]) -> Result<Address> {
+    let hash = Keccak256::digest(pubkey);
+    Ok(Address::from_slice(&hash[12..32]))
+}
 
-    let utxos = match fetch_doge_utxos(&req.doge_address).await {
-        Ok(utxos) => utxos,
-        Err(e) => {
-            eprintln!("Failed to fetch UTXOs: {:?}", e);
-            return HttpResponse::InternalServerError().body(format!("UTXO fetch failed: {}", e));
-        }
-    };
+async fn fetch_doge_transaction(tx_hash: &str) -> Result<TatumTransaction, Box<dyn std::error::Error>> {
+    let url = format!("https://api.tatum.io/v3/dogecoin/transaction/{}", tx_hash);
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("x-api-key", "t-67ae0be674c77aa851dd5cce-bd0e33fb85f646a1931d9d0a")
+        .send()
+        .await?;
 
-    if utxos.is_empty() {
-        return HttpResponse::BadRequest().body("No UTXOs found for the address");
+    if !resp.status().is_success() {
+        return Err(format!("Failed to fetch transaction: {}", resp.status()).into());
     }
 
-    let expected_total = utxos.iter().map(|u| u.value).sum::<u64>();
-    let org_id = req.org_id.clone();
-    let proof_system = req.proof_system.clone();
+    let tx: TatumTransaction = resp.json().await?;
+    Ok(tx)
+}
 
-    let proof_result = task::spawn_blocking(move || {
-let client = ProverClient::from_env();
-        let (pk, vk) = client.setup(DOGE_HOLDINGS_ELF);
-        let mut stdin = sp1_sdk::SP1Stdin::new();
+#[post("/prove-doge-deposit")]
+async fn prove_doge_deposit(
+    req: web::Json<DogeDepositRequest>,
+) -> Result<impl Responder, actix_web::Error>  {
 
-        let utxos = utxos
-            .into_iter()
-            .map(|u| {
-                let txid = hex::decode(&u.txid).expect("valid txid hex");
-                let pubkey = vec![0u8; 33];
-                Utxo {
-                    txid: txid.try_into().expect("32 bytes"),
-                    index: u.vout,
-                    amount: u.value,
-                    pubkey,
-                }
-            })
-            .collect::<Vec<_>>();
 
-        let input = BtcHoldingsInput {
-            utxos,
-            signatures: vec![],
-            expected_total,
-            org_id,
-        };
-
-        stdin.write(&input);
-
-        let proof_result = match proof_system.as_str() {
-            "plonk" => client.prove(&pk, &stdin).plonk().run(),
-            "groth16" => client.prove(&pk, &stdin).groth16().run(),
-            _ => return Err(anyhow::anyhow!("Invalid proof system")),
-        };
-        Ok(proof_result.map(|proof| (proof, vk))?)
-    })
-    .await;
-
-    let (proof, vk) = match proof_result {
-        Ok(Ok((proof, vk))) => (proof, vk),
-        Ok(Err(e)) => {
-            eprintln!("Proof generation failed: {:?}", e);
-            return HttpResponse::InternalServerError().body(format!("Proof generation failed: {}", e));
-        }
+    // Fetch transaction details
+    let tx = match fetch_doge_transaction(&req.tx_hash).await {
+        Ok(tx) => tx,
         Err(e) => {
-            eprintln!("Proof generation task failed: {:?}", e);
-            return HttpResponse::InternalServerError().body("Proof generation task failed");
+            eprintln!("Failed to fetch transaction: {:?}", e);
+             return Ok(HttpResponse::InternalServerError().body(format!("Transaction fetch failed: {}", e)));
+        }
+    }; 
+
+    // Extract sender address from scriptSig (public key)
+    let sender_pubkey = if let Some(input) = tx.inputs.first() {
+        let asm = &input.script_sig.asm;
+        // Extract public key from scriptSig (e.g., after [ALL])
+        let parts: Vec<&str> = asm.split_whitespace().collect();
+        if let Some(pubkey_hex) = parts.get(parts.len().wrapping_sub(2)) {
+            hex::decode(pubkey_hex).map_err(|e| {
+                eprintln!("Invalid public key hex: {:?}", e);
+                HttpResponse::BadRequest().body("Invalid public key in scriptSig")
+            })?
+        } else {
+            return Ok(HttpResponse::BadRequest().body("No public key found in scriptSig"));;
+        }
+    } else {
+        return HttpResponse::BadRequest().body("No inputs found in transaction");
+    };
+
+    let sender_address = match pubkey_to_address(&sender_pubkey) {
+        Ok(addr) => addr,
+        Err(e) => {
+            eprintln!("Failed to compute sender address: {:?}", e);
+            return HttpResponse::InternalServerError().body("Failed to compute sender address");
         }
     };
+
+    // Calculate deposit amount to the defined wallet
+    let deposit_amount: u64 = tx.outputs
+        .iter()
+        .filter(|output| output.address == req.wallet_address)
+        .map(|output| {
+            let value_doge: f64 = output.value.parse().unwrap_or(0.0);
+            (value_doge * 100_000_000.0) as u64 // Convert DOGE to satoshis
+        })
+        .sum();
+
+    if deposit_amount == 0 {
+        return HttpResponse::BadRequest().body("No deposit found to the specified wallet address");
+    }
+
+    // Convert wallet address to 20-byte Address
+    let wallet_address_bytes = if req.wallet_address.starts_with("0x") {
+        hex::decode(&req.wallet_address[2..]).map_err(|e| {
+            eprintln!("Invalid wallet address hex: {:?}", e);
+            HttpResponse::BadRequest().body("Invalid wallet address")
+        })?
+    } else {
+        return HttpResponse::BadRequest().body("Wallet address must start with 0x");
+    };
+    if wallet_address_bytes.len() != 20 {
+        return HttpResponse::BadRequest().body("Wallet address must be a 20-byte Ethereum address");
+    }
+    let wallet_address = Address::from_slice(&wallet_address_bytes);
+
+    let proof_system = req.proof_system.clone();
+
+    // Generate proof
+    
+// Build ProverClient
+let client = ProverClient::builder().network().build();
+let (pk, vk) = client.setup(DOGE_DEPOSIT_ELF);
+
+let mut stdin = SP1Stdin::new();
+stdin.write(&sender_address.bytes());
+stdin.write(&deposit_amount);
+stdin.write(&wallet_address.bytes());
+
+// Run the proof asynchronously
+let proof_result = match proof_system.as_str() {
+    "plonk" => client.prove(&pk, &stdin).plonk().run(),
+    "groth16" => client.prove(&pk, &stdin).groth16().run(),
+    _ => {
+        return Ok(HttpResponse::BadRequest().body("Invalid proof system"));
+    }
+};
+
+let (proof, vk) = match proof_result {
+    Ok(proof) => (proof, vk),
+    Err(e) => {
+        eprintln!("Proof generation failed: {:?}", e);
+        return Ok(HttpResponse::InternalServerError().body("Proof generation failed"));
+    }
+};
+
 
     let public_bytes = proof.public_values.as_slice();
     let public_values = match PublicValuesBtcHoldings::abi_decode(public_bytes) {
@@ -175,72 +233,25 @@ let client = ProverClient::from_env();
         }
     };
 
-    let response = DogeHoldingsResponse {
-        total_doge: public_values.total_btc,
-        org_hash: format!("0x{}", hex::encode(public_values.org_hash)),
+    let response = DogeDepositResponse {
+        sender_address: format!("0x{}", hex::encode(sender_address)),
+        deposit_amount: public_values.deposit_amount,
+        wallet_address: format!("0x{}", hex::encode(wallet_address)),
         vkey: vk.bytes32(),
         public_values: format!("0x{}", hex::encode(public_bytes)),
         proof: format!("0x{}", hex::encode(proof.bytes())),
-        verifier_version: "0x1234abcd".to_string(),
     };
 
-    HttpResponse::Ok().json(response)
+    Ok(HttpResponse::Ok().json(response))
 }
 
-async fn fetch_doge_utxos(address: &str) -> Result<Vec<DogeUtxo>, Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
-    let mut offset = 0;
-    let mut all_transactions = vec![];
-    let page_size = 50;
-
-    loop {
-        let url = format!(
-            "https://api.tatum.io/v3/dogecoin/transaction/address/{}?pageSize={}&offset={}",
-            address, page_size, offset
-        );
-        let resp = client
-            .get(&url)
-            .header("x-api-key", "t-67ae0be674c77aa851dd5cce-bd0e33fb85f646a1931d9d0a")
-            .send()
-            .await?;
-
-        let body = resp.text().await?;
-        let txs: Vec<TatumTransaction> = serde_json::from_str(&body)?;
-
-        if txs.is_empty() {
-            break;
-        }
-
-        all_transactions.extend(txs);
-        offset += page_size;
-    }
-
-    let mut cltv_utxos: Vec<DogeUtxo> = Vec::new();
-
-    for tx in &all_transactions {
-        for (i, output) in tx.outputs.iter().enumerate() {
-            if output.address != address && tx.locktime > 0 {
-                let value_doge: f64 = output.value.parse().unwrap_or(0.0);
-                let value_sats = (value_doge * 100_000_000.0) as u64;
-
-                cltv_utxos.push(DogeUtxo {
-                    txid: tx.hash.clone(),
-                    vout: output.n.unwrap_or(i as u32),
-                    value: value_sats,
-                });
-            }
-        }
-    }
-
-    Ok(cltv_utxos)
-}
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     setup_logger();
-    println!("Starting Dogecoin Holdings SP1 proof server on http://localhost:3001");
+    println!("Starting Dogecoin Deposit SP1 proof server on http://localhost:3001");
 
-    HttpServer::new(|| App::new().service(prove_doge_holdings))
+    HttpServer::new(|| App::new().service(prove_doge_deposit))
         .workers(4)
         .bind(("0.0.0.0", 3001))?
         .run()
