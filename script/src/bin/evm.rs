@@ -10,7 +10,7 @@ use anyhow::Result;
 use hex;
 
 // SP1 ELF binary
-pub const DOGE_DEPOSIT_ELF: &[u8] = include_elf!("doge-deposit-program");
+pub const DOGE_DEPOSIT_ELF: &[u8] = include_elf!("btc-holdings-program");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
