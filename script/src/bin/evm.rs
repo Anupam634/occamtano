@@ -249,11 +249,15 @@ let (proof, vk) = match proof_result {
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     setup_logger();
+<<<<<<< HEAD
     println!("Starting Dogecoin Deposit SP1 proof server on http://localhost:3001");
+=======
+    println!("Starting Dogecoin Holdings SP1 proof server on http://localhost:3005");
+>>>>>>> 7b236965bbdca9f99c6d5e261990aea691e026aa
 
     HttpServer::new(|| App::new().service(prove_doge_deposit))
         .workers(4)
-        .bind(("0.0.0.0", 3001))?
+        .bind(("0.0.0.0", 3005))?
         .run()
         .await
 }
