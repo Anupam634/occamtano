@@ -57,6 +57,9 @@ fibonacci-lib = { path = "../lib" }
 
 # Optional EVM support (Plonk/Groth16)
 alloy-sol-types = { workspace = true }
+bitcoin = "0.32.6"
+log = "0.4.27"
+env_logger = "0.11.8"
 
 [build-dependencies]
 sp1-build = "5.0.8"
