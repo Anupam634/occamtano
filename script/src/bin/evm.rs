@@ -4,13 +4,18 @@ use alloy_primitives::Address;
 use reqwest;
 use serde::{Deserialize, Serialize, Deserializer};
 use sp1_sdk::{include_elf, ProverClient, SP1Stdin, setup_logger, HashableKey, Prover};
+ use sp1_sdk::SP1ProofMode;
 use fibonacci_lib::PublicValuesBtcHoldings;
 use sha3::{Digest, Keccak256};
 use anyhow::Result;
 use hex;
 
+use sp1_sdk::network::FulfillmentStrategy; // <== Required for `.strategy(...)`
+
 // SP1 ELF binary
-pub const DOGE_DEPOSIT_ELF: &[u8] = include_elf!("btc-holdings-program");
+// pub const DOGE_DEPOSIT_ELF: &[u8] = include_elf!("btc-holdings-program");
+
+pub const Tano_elf: &[u8] = include_elf!("tano-program");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,7 +149,6 @@ async fn prove_doge_deposit(
             return Ok(HttpResponse::BadRequest().body("Empty scriptSig"));
         }
 
-        // The public key is the last element in scriptSig.asm
         let pubkey_hex = parts.last().ok_or_else(|| {
             eprintln!("No public key found in scriptSig: {:?}", input.script_sig.asm);
             actix_web::error::ErrorBadRequest("No public key found in scriptSig")
@@ -181,7 +185,7 @@ async fn prove_doge_deposit(
         .filter(|output| output.address == req.wallet_address)
         .map(|output| {
             let value_doge: f64 = output.value.parse().unwrap_or(0.0);
-            (value_doge * 100_000_000.0) as u64 // Convert DOGE to satoshis
+            (value_doge * 100_000_000.0) as u64
         })
         .sum();
 
@@ -189,7 +193,6 @@ async fn prove_doge_deposit(
         return Ok(HttpResponse::BadRequest().body("No deposit found to the specified wallet address"));
     }
 
-    // Convert wallet address to 20-byte Address
     let wallet_address_bytes = if req.wallet_address.starts_with("0x") {
         match hex::decode(&req.wallet_address[2..]) {
             Ok(bytes) => bytes,
@@ -208,23 +211,29 @@ async fn prove_doge_deposit(
 
     let wallet_address = Address::from_slice(&wallet_address_bytes);
 
-    // Proving
+    // === Prove ===
     let client = ProverClient::builder().network().build();
-    let (pk, vk) = client.setup(DOGE_DEPOSIT_ELF);
+    let (pk, vk) = client.setup(Tano_elf);
 
     let mut stdin = SP1Stdin::new();
     stdin.write(&sender_address.as_slice());
     stdin.write(&deposit_amount);
     stdin.write(&wallet_address.as_slice());
 
-    let proof_result = match req.proof_system.as_str() {
-        "plonk" => client.prove(&pk, &stdin).plonk().run(),
-        "groth16" => client.prove(&pk, &stdin).groth16().run(),
-        _ => return Ok(HttpResponse::BadRequest().body("Invalid proof system")),
-    };
+    let proof_result = (|| -> Result<_, anyhow::Error> {
+        let builder = client.prove(&pk, &stdin);
+        let builder = match req.proof_system.as_str() {
+            "groth16" => builder.mode(SP1ProofMode::Groth16),
+            "plonk" => builder.mode(SP1ProofMode::Plonk),
+            _ => return Err(anyhow::anyhow!("Invalid proof system")),
+        };
+        let builder = builder.strategy(FulfillmentStrategy::Hosted);
+        let proof = builder.run()?;
+        Ok((proof, vk))
+    })();
 
     let (proof, vk) = match proof_result {
-        Ok(proof) => (proof, vk),
+        Ok(p) => p,
         Err(e) => {
             eprintln!("Proof generation error: {:?}", e);
             return Ok(HttpResponse::InternalServerError().body("Proof generation failed"));
